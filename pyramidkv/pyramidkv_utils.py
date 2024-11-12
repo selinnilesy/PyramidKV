@@ -35,6 +35,7 @@ class PyramidKVCluster():
         assert self.max_capacity_prompt - self.window_size > 0
         self.kernel_size = kernel_size
         self.pooling = pooling
+        self.previous_attention_weights = None
 
     def reset(self, window_size = 64, max_capacity_prompt = 256 + 64, kernel_size = 5, pooling = 'avgpool'):
         self.window_size = window_size
@@ -42,8 +43,9 @@ class PyramidKVCluster():
         assert self.max_capacity_prompt - self.window_size > 0
         self.kernel_size = kernel_size
         self.pooling = pooling
+        self.previous_attention_weights = None
 
-    def update_kv(self, key_states, query_states, value_states, attention_mask, num_key_value_groups):
+    def update_kv(self, key_states, query_states, value_states, attention_mask, num_key_value_groups, previous_attention_weights):
         
         # check if prefix phase
         assert key_states.shape[-2] == query_states.shape[-2]
@@ -63,10 +65,11 @@ class PyramidKVCluster():
         steps = (max_num - min_num) // (self.num_hidden_layers - 1)
         max_capacity_prompt = max_num - self.layer_idx * steps
         
-        print(f"PyramidKV max_capacity_prompt {max_capacity_prompt}")
+        print(f"PyramidKV max_capacity_prompt {max_capacity_prompt} and q_len {q_len}")
         if q_len < self.max_capacity_prompt:
             return key_states, value_states
         elif q_len < (self.max_capacity_prompt - self.window_size) * 2:
+            print("compressing around...")
             attn_weights = torch.matmul(query_states[..., -self.window_size:, :], key_states.transpose(2, 3)) / math.sqrt(head_dim)
             mask = torch.full((self.window_size, self.window_size), torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
             mask_cond = torch.arange(mask.size(-1), device=attn_weights.device)
@@ -85,6 +88,7 @@ class PyramidKVCluster():
             else:
                 raise ValueError('Pooling method not supported')
             indices = attn_cache.topk(self.max_capacity_prompt - self.window_size, dim=-1).indices
+            # print(f"Compressing top {self.max_capacity_prompt - self.window_size}")
             indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
             k_past_compress = key_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
             v_past_compress = value_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
@@ -94,6 +98,7 @@ class PyramidKVCluster():
             value_states = torch.cat([v_past_compress, v_cur], dim = 2)
             return key_states, value_states
         else:
+            print("compressing...")
             attn_weights = torch.matmul(query_states[..., -self.window_size:, :], key_states.transpose(2, 3)) / math.sqrt(head_dim)
             mask = torch.full((self.window_size, self.window_size), torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
             mask_cond = torch.arange(mask.size(-1), device=attn_weights.device)
@@ -102,7 +107,7 @@ class PyramidKVCluster():
             attention_mask = mask[None, None, :, :]
 
             attn_weights[:, :, -self.window_size:, -self.window_size:] += attention_mask
-
+            # print(attention_mask)
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
             attn_weights_sum = attn_weights[:, :, -self.window_size:, : -self.window_size].sum(dim = -2)
             if self.pooling == 'avgpool':
@@ -111,14 +116,28 @@ class PyramidKVCluster():
                 attn_cache = F.max_pool1d(attn_weights_sum, kernel_size = self.kernel_size, padding=self.kernel_size//2, stride=1)
             else:
                 raise ValueError('Pooling method not supported')
-            indices = attn_cache.topk(max_capacity_prompt, dim=-1).indices
-            indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
+
+            # Step 1: Calculate the increase in scores
+            if previous_attention_weights is not None:
+                score_changes = attn_weights - self.previous_attention_weights 
+                top_increase_indices = score_changes.topk(max_capacity_prompt, dim=-1).indices
+                # Step 2: Get top indices based on the increases
+                indices = attn_cache.topk(max_capacity_prompt, dim=-1).indices
+                indices = score_changes.topk(max_capacity_prompt, dim=-1).indices
+                intersect_indices = list(set(indices) & set(top_increase_indices))
+                print("selected indexes size: ", intersect_indices.size)
+                indices = intersect_indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
+            else:
+                indices = attn_cache.topk(max_capacity_prompt, dim=-1).indices
+                indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
+
             k_past_compress = key_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
-            v_past_compress = value_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
+            v_past_compress = value_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)   
             k_cur = key_states[:, :, -self.window_size:, :]
             v_cur = value_states[:, :, -self.window_size:, :]
             key_states = torch.cat([k_past_compress, k_cur], dim = 2)
             value_states = torch.cat([v_past_compress, v_cur], dim = 2)
+            print("updated previous_attention_weights")
             return key_states, value_states
 
 class SnapKVCluster():
@@ -376,7 +395,7 @@ def init_pyramidkv(self, num_hidden_layers):
         if not hasattr(self.config, 'window_size'):
             self.config.window_size = 32
         if not hasattr(self.config, 'max_capacity_prompt'):
-            self.config.max_capacity_prompt = 2048
+            self.config.max_capacity_prompt = 64
         if not hasattr(self.config, 'kernel_size'):
             self.config.kernel_size = 5
         if not hasattr(self.config, 'pooling'):
@@ -387,7 +406,7 @@ def init_pyramidkv(self, num_hidden_layers):
         num_hidden_layers = num_hidden_layers,
         layer_idx = self.layer_idx,
         window_size = self.config.window_size, 
-        max_capacity_prompt = self.config.max_capacity_prompt, 
+        max_capacity_prompt = 64, 
         kernel_size = self.config.kernel_size,
         pooling = self.config.pooling
         )
