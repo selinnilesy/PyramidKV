@@ -87,19 +87,19 @@ def main():
 
     # Change to your custom prompt text
     # prompt_text = 'In the year 2087, humanity has achieved remarkable technological advancements and established colonies on multiple planets within the Milky Way galaxy. Interstellar travel has become commonplace, with faster-than-light spacecraft enabling people to explore distant star systems. Earth has undergone significant changes due to sustainable development efforts, such as harnessing renewable energy sources and implementing widespread ecological restoration projects. However, alongside these triumphs, new challenges have emerged, including the rise of artificial intelligence, ethical dilemmas surrounding genetic engineering, and interplanetary political tensions. Against this backdrop, a team of intrepid scientists embarks on a mission to uncover the secrets of an ancient alien civilization, hidden deep within an uncharted exoplanet. As they navigate treacherous terrains and encounter otherworldly phenomena, they must confront their own fears and reconcile humanity\'s thirst for knowledge with the potential consequences of uncovering secrets that were better left buried. The fate of both their mission and the future of humanity hang in the balance.'
-    # prompt_text = 'In a small, bustling cafe nestled in the heart of a vibrant city, a serendipitous event unfolded, leaving a lasting impression on all who witnessed it. As the patrons sat sipping their coffees and engaging in animated conversations, a talented street musician entered the cafe, carrying a weathered guitar and radiating an aura of creativity.'
+    prompt_text = 'In a small, bustling cafe nestled in the heart of a vibrant city, a serendipitous event unfolded, leaving a lasting impression on all who witnessed it. As the patrons sat sipping their coffees and engaging in animated conversations, a talented street musician entered the cafe, carrying a weathered guitar and radiating an aura of creativity.'
     # prompt_text = "on what day was the United States founded?"
-    with open('/scratch/users/seliny2/prompt/prompt_300.txt', 'r') as file:
-        prompt_text = file.read() 
+    # with open('/scratch/users/seliny2/prompt/prompt_300.txt', 'r') as file:
+    #     prompt_text = file.read() 
     model_name = "meta-llama/Llama-2-7b-hf"
     config = LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
-    # config._attn_implementation = "sdpa"
+    config._attn_implementation = "eager"
     # config.transformers_version = "4.40"
     # print(config)
     replace_llama(config)
 
-    print("LlamaAttention class after patch:", transformers.models.llama.modeling_llama.LlamaAttention)
-    print("LlamaSdpaAttention class after patch:", transformers.models.llama.modeling_llama.LlamaSdpaAttention)
+    # print("LlamaAttention class after patch:", transformers.models.llama.modeling_llama.LlamaAttention)
+    # print("LlamaSdpaAttention class after patch:", transformers.models.llama.modeling_llama.LlamaSdpaAttention)
     print(transformers.models.llama.modeling_llama.LlamaSdpaAttention.forward)
 
     tokenizer = LlamaTokenizer.from_pretrained('meta-llama/Llama-2-7b-hf', use_fast=True)

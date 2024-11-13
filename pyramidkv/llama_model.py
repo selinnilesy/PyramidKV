@@ -16,6 +16,7 @@ from transformers.utils import (
 )
 from pyramidkv.pyramidkv_utils import init_pyramidkv,init_snapkv,init_CAM,init_H2O,init_StreamingLLM
 import math
+import sys
 
 logger = logging.get_logger(__name__)
 
@@ -110,6 +111,19 @@ class CustomLlamaAttention(nn.Module):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+        with open("queries.txt", "a") as file:
+            sys.stdout = file
+            print("Queries - Layer:", self.layer_idx, " size: ", query_states.shape) 
+            # print(query_states) 
+        with open("keys.txt", "a") as file:
+            sys.stdout = file
+            print("Keys - Layer:", self.layer_idx, " size: ", key_states.shape) 
+            # print(key_states)
+        with open("values.txt", "a") as file:
+            sys.stdout = file
+            print("Values - Layer:", self.layer_idx, " size: ", value_states.shape) 
+            # print(value_states)
+        sys.stdout = sys.__stdout__
 
         kv_seq_len = key_states.shape[-2]
         # if past_key_value is not None:
@@ -151,11 +165,34 @@ class CustomLlamaAttention(nn.Module):
                 self.kv_seq_len = kv_seq_len
                 key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states, attention_mask, self.num_key_value_groups, self.previous_attention_weights)
                 past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
+                # Q: torch.Size([1, 32, 88, 128])
+                # K: torch.Size([1, 32, 88, 128])
+                # V: torch.Size([1, 32, 88, 128])
             else:
                 self.kv_seq_len += q_len
                 key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+                print("growing cache...")
+                print(key_states.shape)
+                print(value_states.shape)
+                # Q: torch.Size([1, 32, 1, 128]) always 1,128 for one new token
+                # growing KV...
+                # torch.Size([1, 32, 89, 128])
+                # ... 
+                # torch.Size([1, 32, 89-32, 128])
+                # grows to
+                # torch.Size([1, 32, 151, 128])
+                # torch.Size([1, 32, 151-32, 128])
+               
         
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        # attn_weights shape = 1 x 32 x 88 x 88 (qlenxqlen) after compressed
+        # [1, 32, 1, 89]
+        # ...
+        # # [1, 32, 1, 89-31] = # [1, 32, 1, 58]
+        # ... as cache growing ....
+        # torch.Size([1, 32, 1, x]) [1, 32, 1, 151]
+        # ...
+        # torch.Size([1, 32, 1, x-31]) = [1, 32, 1, 119]
 
         self.previous_attention_weights = attn_weights
 
@@ -166,7 +203,9 @@ class CustomLlamaAttention(nn.Module):
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
+        print("participating query size:", query_states.shape)
         attn_output = torch.matmul(attn_weights, value_states)
+        # torch.Size([1, 32, 1, 128]) as we generate tokens
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
@@ -222,7 +261,7 @@ class LlamaSdpaAttention(CustomLlamaAttention):
             )
 
         init_pyramidkv(self, num_hidden_layers=self.config.num_hidden_layers)
-        print("Hello from llama_sdpa_attn_forward_PyramidKV")
+        # print("Hello from llama_sdpa_attn_forward_PyramidKV")
 
         bsz, q_len, _ = hidden_states.size()
 
@@ -274,17 +313,40 @@ class LlamaSdpaAttention(CustomLlamaAttention):
                 self.kv_seq_len = kv_seq_len
                 key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states, attention_mask, self.num_key_value_groups, self.previous_attention_weights)
                 past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
+                # attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+                # self.previous_attention_weights = attn_weights
             else:
                 self.kv_seq_len += q_len
                 key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
+                # attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+                # pos_score_changes = attn_weights - self.previous_attention_weights 
+                # top_increase_indices = pos_score_changes.topk(self.kv_cluster.max_capacity_prompt, dim=-1).indices
+                # print(top_increase_indices.shape)
+                # indices = attn_weights.topk(1, dim=-1).indices
+                # print(indices.shape)
+                # indices = list(set(indices) & set(top_increase_indices))
+                # print("joint size: ", indices.length())
+                # indices = indices.unsqueeze(-1).expand(-1, -1, -1, self.head_dim)
+
+                # k_past_compress = key_states[:, :, :, :].gather(dim = 2, index = indices)
+                # v_past_compress = value_states[:, :, :, :].gather(dim = 2, index = indices)   
+                
+                
+                # filtered_attn_weights = attn_weights[[i for i, j in indices], [j for i, j in indices]]
+                # self.previous_attention_weights = filtered_attn_weights
+
+        # if self.previous_attention_weights is None:
+        #     print("is none")
+        # else:
+        #     print("is not none")
+        # print("update previous_attention_weights: ", self.previous_attention_weights)
+        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        self.previous_attention_weights = attn_weights
+
         causal_mask = attention_mask
         if attention_mask is not None:
             causal_mask = causal_mask[:, :, :, : key_states.shape[-2]]
-
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-
-        self.previous_attention_weights = attn_weights
 
         # SDPA with memory-efficient backend is currently (torch==2.1.2) bugged with non-contiguous inputs with custom attn_mask,
         # Reference: https://github.com/pytorch/pytorch/issues/112577.

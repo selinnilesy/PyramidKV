@@ -137,7 +137,6 @@ class PyramidKVCluster():
             v_cur = value_states[:, :, -self.window_size:, :]
             key_states = torch.cat([k_past_compress, k_cur], dim = 2)
             value_states = torch.cat([v_past_compress, v_cur], dim = 2)
-            print("updated previous_attention_weights")
             return key_states, value_states
 
 class SnapKVCluster():
