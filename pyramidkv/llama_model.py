@@ -164,16 +164,16 @@ class CustomLlamaAttention(nn.Module):
             if key_states.shape[-2] == kv_seq_len:
                 self.kv_seq_len = kv_seq_len
                 key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states, attention_mask, self.num_key_value_groups, self.previous_attention_weights)
-                past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
+                key_states, value_states = past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
                 # Q: torch.Size([1, 32, 88, 128])
                 # K: torch.Size([1, 32, 88, 128])
                 # V: torch.Size([1, 32, 88, 128])
             else:
                 self.kv_seq_len += q_len
                 key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
-                print("growing cache...")
-                print(key_states.shape)
-                print(value_states.shape)
+            #     print("growing cache...")
+            #     print(key_states.shape)
+            #     print(value_states.shape)
                 # Q: torch.Size([1, 32, 1, 128]) always 1,128 for one new token
                 # growing KV...
                 # torch.Size([1, 32, 89, 128])
@@ -184,7 +184,11 @@ class CustomLlamaAttention(nn.Module):
                 # torch.Size([1, 32, 151-32, 128])
                
         
+        print("query_states:", query_states.shape)
+        print("key_states:", key_states.shape)
+        print("value_states:", value_states.shape)
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        
         # attn_weights shape = 1 x 32 x 88 x 88 (qlenxqlen) after compressed
         # [1, 32, 1, 89]
         # ...
@@ -204,6 +208,7 @@ class CustomLlamaAttention(nn.Module):
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
         print("participating query size:", query_states.shape)
+        print("attn_weights:", attn_weights.shape)
         attn_output = torch.matmul(attn_weights, value_states)
         # torch.Size([1, 32, 1, 128]) as we generate tokens
 

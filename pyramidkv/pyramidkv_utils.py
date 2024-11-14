@@ -69,7 +69,6 @@ class PyramidKVCluster():
         if q_len < self.max_capacity_prompt:
             return key_states, value_states
         elif q_len < (self.max_capacity_prompt - self.window_size) * 2:
-            print("compressing around...")
             attn_weights = torch.matmul(query_states[..., -self.window_size:, :], key_states.transpose(2, 3)) / math.sqrt(head_dim)
             mask = torch.full((self.window_size, self.window_size), torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
             mask_cond = torch.arange(mask.size(-1), device=attn_weights.device)
@@ -88,10 +87,10 @@ class PyramidKVCluster():
             else:
                 raise ValueError('Pooling method not supported')
             indices = attn_cache.topk(self.max_capacity_prompt - self.window_size, dim=-1).indices
-            # print(f"Compressing top {self.max_capacity_prompt - self.window_size}")
             indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
             k_past_compress = key_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
             v_past_compress = value_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
+
             k_cur = key_states[:, :, -self.window_size:, :]
             v_cur = value_states[:, :, -self.window_size:, :]
             key_states = torch.cat([k_past_compress, k_cur], dim = 2)
@@ -99,7 +98,10 @@ class PyramidKVCluster():
             return key_states, value_states
         else:
             print("compressing...")
+            print("Q:", query_states.shape)
+            print("K:",key_states.shape)
             attn_weights = torch.matmul(query_states[..., -self.window_size:, :], key_states.transpose(2, 3)) / math.sqrt(head_dim)
+            print("initial QK^T", attn_weights.shape)
             mask = torch.full((self.window_size, self.window_size), torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
             mask_cond = torch.arange(mask.size(-1), device=attn_weights.device)
             mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
@@ -107,9 +109,11 @@ class PyramidKVCluster():
             attention_mask = mask[None, None, :, :]
 
             attn_weights[:, :, -self.window_size:, -self.window_size:] += attention_mask
+            print("QK^T windowed", attn_weights.shape)
             # print(attention_mask)
             attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
             attn_weights_sum = attn_weights[:, :, -self.window_size:, : -self.window_size].sum(dim = -2)
+            print("QK^T summed", attn_weights_sum.shape)
             if self.pooling == 'avgpool':
                 attn_cache = F.avg_pool1d(attn_weights_sum, kernel_size = self.kernel_size, padding=self.kernel_size//2, stride=1)
             elif self.pooling == 'maxpool':
@@ -117,26 +121,73 @@ class PyramidKVCluster():
             else:
                 raise ValueError('Pooling method not supported')
 
-            # Step 1: Calculate the increase in scores
-            if previous_attention_weights is not None:
-                score_changes = attn_weights - self.previous_attention_weights 
-                top_increase_indices = score_changes.topk(max_capacity_prompt, dim=-1).indices
-                # Step 2: Get top indices based on the increases
-                indices = attn_cache.topk(max_capacity_prompt, dim=-1).indices
-                indices = score_changes.topk(max_capacity_prompt, dim=-1).indices
-                intersect_indices = list(set(indices) & set(top_increase_indices))
-                print("selected indexes size: ", intersect_indices.size)
-                indices = intersect_indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
-            else:
-                indices = attn_cache.topk(max_capacity_prompt, dim=-1).indices
-                indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
-
+            indices = attn_cache.topk(max_capacity_prompt, dim=-1).indices
+            print(indices.shape)
+            indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
+            print(indices.shape)
             k_past_compress = key_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
-            v_past_compress = value_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)   
+            v_past_compress = value_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
+            print(k_past_compress.shape)
+            print(v_past_compress.shape)
+
+            mask_size= math.ceil(max_capacity_prompt/4)
+            middle_compressed_size= mask_size
+            print(mask_size, " vs. ", max_capacity_prompt)
+
+            if (max_capacity_prompt >= (4*mask_size)) :
+
+                left_k = k_past_compress[:, :, :mask_size, :]
+                left_v = v_past_compress[:, :, :mask_size, :]
+                right_k =  k_past_compress[:, :, -mask_size:, :]
+                right_v =  v_past_compress[:, :, -mask_size:, :]
+                print("left K:", left_k.shape)
+                print("right K:", right_k.shape)
+                print("left V:", left_v.shape)
+                print("right V:", right_v.shape)
+
+                middle_k = k_past_compress[:, :, mask_size : -mask_size, :]
+                middle_v =  v_past_compress[:, :, mask_size : -mask_size, :]
+                print("middle K:", middle_k.shape)
+                print("middle V:", middle_v.shape)
+
+                middle_attn_weights = attn_weights[:, :, mask_size :-self.window_size-mask_size, mask_size :-self.window_size-mask_size]
+                print("middle_attn_weights:", middle_attn_weights.shape)
+                middle_attn_weights = nn.functional.softmax(middle_attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+                attn_weights_sum = middle_attn_weights[:, :, :, ].sum(dim = -2)
+                print("sum middle_attn_weights:", attn_weights_sum.shape)
+
+                if self.pooling == 'avgpool':
+                    middle_attn_weights = F.avg_pool1d(attn_weights_sum, kernel_size = self.kernel_size, padding=self.kernel_size//2, stride=1)
+                elif self.pooling == 'maxpool':
+                    middle_attn_weights = F.max_pool1d(attn_weights_sum, kernel_size = self.kernel_size, padding=self.kernel_size//2, stride=1)
+
+                middle_compress_indices = middle_attn_weights.topk(middle_compressed_size, dim=-1).indices
+                print("indices :", middle_compress_indices.shape)
+                middle_compress_indices = middle_compress_indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
+                print("indices :", middle_compress_indices.shape)
+
+
+                middle_kcompressed = middle_k[:, :, :, :].gather(dim = 2, index = middle_compress_indices)
+                middle_vcompressed = middle_v[:, :, :, :].gather(dim = 2, index = middle_compress_indices)
+
+                print("middle middle_kcompressed", middle_kcompressed.shape)
+                print("middle middle_vcompressed", middle_vcompressed.shape)
+
+                k_past_compress = torch.cat([left_k, middle_kcompressed], dim = 2)
+                v_past_compress =  torch.cat([left_v, middle_vcompressed], dim = 2)
+                print("v_past_compress value_states", v_past_compress.shape)
+                k_past_compress = torch.cat([k_past_compress, right_k], dim = 2)
+                v_past_compress =  torch.cat([v_past_compress, right_v], dim = 2)
+                print("v_past_compress value_states", v_past_compress.shape)
+
             k_cur = key_states[:, :, -self.window_size:, :]
             v_cur = value_states[:, :, -self.window_size:, :]
+            print("k_cur ", k_cur.shape)
+            print("v_cur ", v_cur.shape)
             key_states = torch.cat([k_past_compress, k_cur], dim = 2)
             value_states = torch.cat([v_past_compress, v_cur], dim = 2)
+            print("new key_states", key_states.shape)
+            print("new value_states", value_states.shape)
             return key_states, value_states
 
 class SnapKVCluster():
