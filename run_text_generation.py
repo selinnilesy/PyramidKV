@@ -95,12 +95,7 @@ def main():
     config = LlamaConfig.from_pretrained("meta-llama/Llama-2-7b-hf")
     config._attn_implementation = "eager"
     # config.transformers_version = "4.40"
-    # print(config)
     replace_llama(config)
-
-    # print("LlamaAttention class after patch:", transformers.models.llama.modeling_llama.LlamaAttention)
-    # print("LlamaSdpaAttention class after patch:", transformers.models.llama.modeling_llama.LlamaSdpaAttention)
-    print(transformers.models.llama.modeling_llama.LlamaSdpaAttention.forward)
 
     tokenizer = LlamaTokenizer.from_pretrained('meta-llama/Llama-2-7b-hf', use_fast=True)
 

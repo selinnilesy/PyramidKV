@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import List, Optional, Tuple, Union
 import warnings
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import Cache, DynamicCache, StaticCache
 import transformers.models.llama.modeling_llama
 from transformers.models.llama.modeling_llama import (
     apply_rotary_pos_emb,
@@ -84,7 +84,7 @@ class CustomLlamaAttention(nn.Module):
         bsz, q_len, _ = hidden_states.size()
 
         init_pyramidkv(self, num_hidden_layers=self.config.num_hidden_layers)
-        print("Hello from CustomLlamaAttention forward")
+        # print("Hello from CustomLlamaAttention forward")
 
         if self.config.pretraining_tp > 1:
             key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
@@ -111,19 +111,19 @@ class CustomLlamaAttention(nn.Module):
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        with open("queries.txt", "a") as file:
-            sys.stdout = file
-            print("Queries - Layer:", self.layer_idx, " size: ", query_states.shape) 
-            # print(query_states) 
-        with open("keys.txt", "a") as file:
-            sys.stdout = file
-            print("Keys - Layer:", self.layer_idx, " size: ", key_states.shape) 
-            # print(key_states)
-        with open("values.txt", "a") as file:
-            sys.stdout = file
-            print("Values - Layer:", self.layer_idx, " size: ", value_states.shape) 
-            # print(value_states)
-        sys.stdout = sys.__stdout__
+        # with open("queries.txt", "a") as file:
+        #     sys.stdout = file
+        #     print("Queries - Layer:", self.layer_idx, " size: ", query_states.shape) 
+        #     # print(query_states) 
+        # with open("keys.txt", "a") as file:
+        #     sys.stdout = file
+        #     print("Keys - Layer:", self.layer_idx, " size: ", key_states.shape) 
+        #     # print(key_states)
+        # with open("values.txt", "a") as file:
+        #     sys.stdout = file
+        #     print("Values - Layer:", self.layer_idx, " size: ", value_states.shape) 
+        #     # print(value_states)
+        # sys.stdout = sys.__stdout__
 
         kv_seq_len = key_states.shape[-2]
         # if past_key_value is not None:
@@ -184,9 +184,9 @@ class CustomLlamaAttention(nn.Module):
                 # torch.Size([1, 32, 151-32, 128])
                
         
-        print("query_states:", query_states.shape)
-        print("key_states:", key_states.shape)
-        print("value_states:", value_states.shape)
+        # print("query_states:", query_states.shape)
+        # print("key_states:", key_states.shape)
+        # print("value_states:", value_states.shape)
         attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
         
         # attn_weights shape = 1 x 32 x 88 x 88 (qlenxqlen) after compressed
@@ -207,8 +207,8 @@ class CustomLlamaAttention(nn.Module):
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-        print("participating query size:", query_states.shape)
-        print("attn_weights:", attn_weights.shape)
+        # print("participating query size:", query_states.shape)
+        # print("attn_weights:", attn_weights.shape)
         attn_output = torch.matmul(attn_weights, value_states)
         # torch.Size([1, 32, 1, 128]) as we generate tokens
 
